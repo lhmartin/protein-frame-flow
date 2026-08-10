@@ -4,7 +4,7 @@ import hydra
 from omegaconf import DictConfig, OmegaConf
 
 # Pytorch lightning imports
-from pytorch_lightning import LightningDataModule, LightningModule, Trainer
+from pytorch_lightning import LightningDataModule, LightningModule, Trainer, seed_everything
 from pytorch_lightning.loggers.wandb import WandbLogger
 from pytorch_lightning.trainer import Trainer
 from pytorch_lightning.callbacks import ModelCheckpoint
@@ -93,6 +93,10 @@ class Experiment:
 
 @hydra.main(version_base=None, config_path="../configs", config_name="base.yaml")
 def main(cfg: DictConfig):
+
+    # Seed everything (model init, sampling, etc.) so the experiment arms differ
+    # only by their XM setting, not by random initialization.
+    seed_everything(cfg.experiment.seed, workers=True)
 
     if cfg.experiment.warm_start is not None and cfg.experiment.warm_start_cfg_override:
         # Loads warm start config.

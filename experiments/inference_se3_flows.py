@@ -77,8 +77,15 @@ class EvalRunner:
         return output_dir
 
     def run_sampling(self):
-        devices = GPUtil.getAvailable(
-            order='memory', limit = 8)[:self._infer_cfg.num_gpus]
+        visible = os.environ.get('CUDA_VISIBLE_DEVICES')
+        if visible:
+            # Honor an explicit pin (e.g. CUDA_VISIBLE_DEVICES=0): the visible
+            # devices are re-indexed 0..N-1, so use those instead of GPUtil's
+            # physical indices (which ignore the mask and can be out of range).
+            devices = list(range(len(visible.split(','))))[:self._infer_cfg.num_gpus]
+        else:
+            devices = GPUtil.getAvailable(
+                order='memory', limit = 8)[:self._infer_cfg.num_gpus]
         log.info(f"Using devices: {devices}")
         log.info(f'Evaluating {self._infer_cfg.task}')
         if self._infer_cfg.task == 'unconditional':
