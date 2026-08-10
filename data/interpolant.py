@@ -3,6 +3,7 @@ import torch
 from data import so3_utils
 from data import utils as du
 from scipy.spatial.transform import Rotation
+from scipy.optimize import linear_sum_assignment
 from data import all_atom
 import copy
 from torch import autograd
@@ -57,9 +58,52 @@ class Interpolant:
     def _corrupt_trans(self, trans_1, t, res_mask, diffuse_mask):
         trans_nm_0 = _centered_gaussian(*res_mask.shape, self._device)
         trans_0 = trans_nm_0 * du.NM_TO_ANG_SCALE
+        # Minibatch optimal-transport coupling (Arm B): permute the prior to the
+        # data within the batch via a Kabsch-aligned Hungarian assignment.
+        # Restored from git history (commit a542856; removed in 20293ab), with a
+        # fixed return ordering — see _batch_ot.
+        if self._trans_cfg.batch_ot:
+            trans_0 = self._batch_ot(trans_0, trans_1, res_mask)
         trans_t = (1 - t[..., None]) * trans_0 + t[..., None] * trans_1
         trans_t = _trans_diffuse_mask(trans_t, trans_1, diffuse_mask)
         return trans_t * res_mask[..., None]
+
+    def _batch_ot(self, trans_0, trans_1, res_mask, return_rot=False):
+        num_batch, num_res = trans_0.shape[:2]
+        noise_idx, gt_idx = torch.where(
+            torch.ones(num_batch, num_batch))
+        batch_nm_0 = trans_0[noise_idx]
+        batch_nm_1 = trans_1[gt_idx]
+        batch_mask = res_mask[gt_idx]
+        aligned_nm_0, aligned_nm_1, align_rots = du.batch_align_structures(
+            batch_nm_0, batch_nm_1, mask=batch_mask
+        )
+        aligned_nm_0 = aligned_nm_0.reshape(num_batch, num_batch, num_res, 3)
+        aligned_nm_1 = aligned_nm_1.reshape(num_batch, num_batch, num_res, 3)
+        # Per-(noise,gt) Kabsch rotation used to align the noise (aligned = pos @ R).
+        align_rots = align_rots.reshape(num_batch, num_batch, 3, 3)
+
+        # Cost matrix of aligned noise (rows) to ground truth (cols).
+        batch_mask = batch_mask.reshape(num_batch, num_batch, num_res)
+        cost_matrix = torch.sum(
+            torch.linalg.norm(aligned_nm_0 - aligned_nm_1, dim=-1), dim=-1
+        ) / torch.sum(batch_mask, dim=-1)
+        # aligned_nm_0 is indexed [noise, gt]. linear_sum_assignment gives, for
+        # each noise (row), its matched gt (col). corrupt_batch pairs trans_0[k]
+        # with trans_1[k], so we return the coupling ordered by GT index:
+        # result[g] = aligned noise matched to gt g (the inverse of the noise->gt
+        # map). NOTE: the historical code returned aligned_nm_0[gt_perm, noise_perm],
+        # which mis-pairs unless the assignment is an involution and empirically
+        # made the coupling worse than identity; this ordering is corrected.
+        noise_ind, gt_ind = linear_sum_assignment(du.to_numpy(cost_matrix))
+        order = torch.argsort(torch.as_tensor(gt_ind))
+        noise_for_gt = torch.as_tensor(noise_ind)[order]
+        gt_arange = torch.arange(num_batch)
+        coupled_trans = aligned_nm_0[noise_for_gt, gt_arange]
+        if return_rot:
+            # R[g] is the Kabsch rotation that aligned the noise assigned to gt g.
+            return coupled_trans, align_rots[noise_for_gt, gt_arange]
+        return coupled_trans
     
     def _corrupt_rotmats(self, rotmats_1, t, res_mask, diffuse_mask):
         num_batch, num_res = res_mask.shape
@@ -78,7 +122,37 @@ class Interpolant:
         )
         return _rots_diffuse_mask(rotmats_t, rotmats_1, diffuse_mask)
 
-    def corrupt_batch(self, batch):
+    def _corrupt_se3_ot(self, trans_1, rotmats_1, t, res_mask, diffuse_mask):
+        """SE(3)-consistent minibatch-OT. Runs OT on translations AND applies the
+        same per-protein Kabsch rotation R to the rotation-noise frames, so each
+        residue's noised position and frame share one rigid transform (plain OT
+        rotates positions only, leaving frames unaligned)."""
+        num_batch, num_res = res_mask.shape
+        # translation prior + OT (returns the Kabsch rotation R per protein)
+        trans_0 = _centered_gaussian(num_batch, num_res, self._device) * du.NM_TO_ANG_SCALE
+        trans_0, R = self._batch_ot(trans_0, trans_1, res_mask, return_rot=True)  # R: [B,3,3]
+        # rotation prior (IGSO3 perturbation of the data frames), then rotate the
+        # frames by the SAME OT rotation. batch_align uses `pos @ R`, so the global
+        # rotation in column form is R^T; frames transform F -> R^T @ F.
+        noisy_rotmats = self.igso3.sample(
+            torch.tensor([1.5]), num_batch * num_res).to(self._device)
+        noisy_rotmats = noisy_rotmats.reshape(num_batch, num_res, 3, 3)
+        rotmats_0 = torch.einsum("...ij,...jk->...ik", rotmats_1, noisy_rotmats)
+        Rt = R.transpose(-1, -2)
+        rotmats_0 = torch.einsum("bij,bnjk->bnik", Rt, rotmats_0)
+        # interpolate both channels
+        trans_t = (1 - t[..., None]) * trans_0 + t[..., None] * trans_1
+        trans_t = _trans_diffuse_mask(trans_t, trans_1, diffuse_mask) * res_mask[..., None]
+        rotmats_t = so3_utils.geodesic_t(t[..., None], rotmats_1, rotmats_0)
+        identity = torch.eye(3, device=self._device)
+        rotmats_t = (
+            rotmats_t * res_mask[..., None, None]
+            + identity[None, None] * (1 - res_mask[..., None, None])
+        )
+        rotmats_t = _rots_diffuse_mask(rotmats_t, rotmats_1, diffuse_mask)
+        return trans_t, rotmats_t
+
+    def corrupt_batch(self, batch, t=None):
         noisy_batch = copy.deepcopy(batch)
 
         # [B, N, 3]
@@ -92,12 +166,25 @@ class Interpolant:
         diffuse_mask = batch['diffuse_mask']
         num_batch, _ = diffuse_mask.shape
 
-        # [B, 1]
-        t = self.sample_t(num_batch)[:, None]
+        # [B, 1]. When t is supplied (XM), reuse it instead of sampling so that
+        # all K candidates share the same timestep; otherwise sample as before.
+        if t is None:
+            t = self.sample_t(num_batch)[:, None]
         so3_t = t
         r3_t = t
         noisy_batch['so3_t'] = so3_t
         noisy_batch['r3_t'] = r3_t
+
+        # SE(3)-consistent OT couples the translation + rotation corruption, so it
+        # replaces the separate paths below when enabled.
+        if self._trans_cfg.get('se3_ot', False):
+            trans_t, rotmats_t = self._corrupt_se3_ot(
+                trans_1, rotmats_1, r3_t, res_mask, diffuse_mask)
+            if torch.any(torch.isnan(trans_t)) or torch.any(torch.isnan(rotmats_t)):
+                raise ValueError('NaN during se3_ot corruption')
+            noisy_batch['trans_t'] = trans_t
+            noisy_batch['rotmats_t'] = rotmats_t
+            return noisy_batch
 
         # Apply corruptions
         if self._trans_cfg.corrupt:
@@ -118,7 +205,31 @@ class Interpolant:
             raise ValueError('NaN in rotmats_t during corruption')
         noisy_batch['rotmats_t'] = rotmats_t
         return noisy_batch
-    
+
+    def corrupt_batch_xm(self, batch, K):
+        """Explorative Modeling: draw K corrupted candidates that SHARE the same
+        timestep t and ground-truth x_1, varying only the prior noise sample.
+
+        Returns a list of K noisy batches. t is sampled once here; each candidate
+        draws independent translation/rotation priors via corrupt_batch(t=t).
+        """
+        num_batch = batch['diffuse_mask'].shape[0]
+        # Sample t ONCE for all candidates (shared-t requirement).
+        t = self.sample_t(num_batch)[:, None]
+        candidates = []
+        for _ in range(K):
+            noisy_batch = self.corrupt_batch(batch, t=t)
+            # Requirement #1: every candidate must share the same t.
+            assert torch.equal(noisy_batch['r3_t'], t) \
+                and torch.equal(noisy_batch['so3_t'], t), \
+                'XM candidates must share the same timestep t'
+            # Requirement #2: every candidate must share the same ground-truth x_1.
+            assert torch.equal(noisy_batch['trans_1'], batch['trans_1']) \
+                and torch.equal(noisy_batch['rotmats_1'], batch['rotmats_1']), \
+                'XM candidates must share the same ground-truth x_1'
+            candidates.append(noisy_batch)
+        return candidates
+
     def rot_sample_kappa(self, t):
         if self._rots_cfg.sample_schedule == 'exp':
             return 1 - torch.exp(-t*self._rots_cfg.exp_rate)

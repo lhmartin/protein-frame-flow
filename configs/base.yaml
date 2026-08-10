@@ -33,7 +33,8 @@ interpolant:
 
   trans:
     corrupt: True
-    batch_ot: True
+    batch_ot: False
+    se3_ot: False          # SE(3)-consistent OT: also rotate the frames by the OT Kabsch R
     sample_schedule: linear
     sample_temp: 1.0
     vpsde_bmin: 0.1
@@ -47,6 +48,17 @@ interpolant:
   sampling:
     num_timesteps: 100
     do_sde: False
+
+  # Explorative Modeling (XM): winner-take-all best-of-K coupling selection.
+  # No-op when enabled=false (training path is byte-for-byte unchanged).
+  xm:
+    enabled: false
+    K: 4
+    selection: argmin          # argmin (winner-take-all) or soft (softmax-weighted)
+    soft_temperature: 1.0
+    selection_loss: trans_rot  # subset scoring candidates: trans_rot | trans | rot
+    warmup_steps: 0            # run vanilla (K=1) until global_step >= warmup_steps
+    numeric_check: false       # assert winner re-run score == no_grad selection score
 
   self_condition: ${model.edge_features.self_condition}
 

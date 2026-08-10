@@ -1,0 +1,36 @@
+# Phase 3 XM experiment — shared config for ALL arms (PDB, proteins <=128 res).
+#
+# Per-arm settings (xm.enabled / xm.K, seed, run name) are passed as Hydra
+# overrides by scratchpad/run_xm_arms.sh, so every arm is reproducible from this
+# single yaml + a one-line override. Example:
+#
+#   python experiments/train_se3_flows.py --config-name xm_pdb128 \
+#       interpolant.xm.enabled=true interpolant.xm.K=4 \
+#       experiment.seed=123 experiment.wandb.name=armC_k4
+#
+# NOTE: experiment.seed is currently only applied to the data sampler; add
+# pl.seed_everything(cfg.experiment.seed) in experiments/train_se3_flows.py for
+# bitwise same-seed model init across arms (flagged to the user, not changed).
+defaults:
+  - base
+  - _self_
+
+data:
+  dataset: pdb
+
+pdb_dataset:
+  filter:
+    max_num_res: 128      # Arm scope: proteins <=128 residues
+    min_num_res: 60
+
+experiment:
+  num_devices: 1          # thermal-limited: one GPU per run, pinned via thermal_guard
+  wandb:
+    project: se3-fm-xm
+    name: armA_vanilla    # overridden per arm
+
+interpolant:
+  trans:
+    batch_ot: false       # experiment default: independent coupling. Arm B sets true.
+  xm:
+    enabled: false        # Arm A default; arms C set enabled=true, K in {2,4,8}
