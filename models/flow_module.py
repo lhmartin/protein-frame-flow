@@ -281,18 +281,135 @@ class FlowModule(LightningModule):
             rank_zero_only=rank_zero_only
         )
 
+    @staticmethod
+    def _xm_selection_subset(losses, subset):
+        """Per-example selection score from the structural loss terms only."""
+        if subset == 'trans':
+            return losses['trans_loss']
+        if subset == 'rot':
+            return losses['rots_vf_loss']
+        return losses['trans_loss'] + losses['rots_vf_loss']  # 'trans_rot'
+
+    @staticmethod
+    def _xm_gather(stacked, winner):
+        """Gather the winning candidate per example. stacked: [K, B, ...];
+        winner: [B] -> returns [B, ...]."""
+        num_batch = winner.shape[0]
+        view_shape = [1, num_batch] + [1] * (stacked.dim() - 2)
+        idx = winner.view(*view_shape).expand(1, *stacked.shape[1:])
+        return torch.gather(stacked, 0, idx).squeeze(0)
+
+    def _xm_self_condition(self, candidates):
+        """Draw the self-conditioning coin ONCE (shared across candidates, so the
+        RNG draw matches the vanilla path) and, if on, compute each candidate's
+        own trans_sc via a no_grad forward."""
+        if self._interpolant_cfg.self_condition and random.random() > 0.5:
+            for noisy_batch in candidates:
+                with torch.no_grad():
+                    model_sc = self.model(noisy_batch)
+                    noisy_batch['trans_sc'] = (
+                        model_sc['pred_trans'] * noisy_batch['diffuse_mask'][..., None]
+                        + noisy_batch['trans_1'] * (1 - noisy_batch['diffuse_mask'][..., None])
+                    )
+
+    @staticmethod
+    def _xm_diagnostics(scores, winner, t):
+        """scores: [K, B]; winner: [B]; t: [B, 1]. Returns winner histogram,
+        best-worst gap, and gap-vs-t correlation."""
+        K, num_batch = scores.shape
+        best = torch.min(scores, dim=0).values
+        worst = torch.max(scores, dim=0).values
+        gap = worst - best
+        t_flat = t.squeeze(-1)
+        if num_batch > 1:
+            corr = torch.corrcoef(torch.stack([gap, t_flat]))[0, 1]
+        else:
+            corr = torch.tensor(float('nan'), device=scores.device)
+        hist = torch.bincount(winner, minlength=K).float() / num_batch
+        return {
+            'gap_mean': gap.mean(),
+            'gap_t_corr': corr,
+            'winner_hist': hist,
+            'K': K,
+        }
+
+    def _xm_step(self, batch, xm_cfg):
+        """Explorative Modeling training step. Builds K candidates sharing t and
+        x_1, selects per example, and returns (noisy_batch, batch_losses, diag).
+
+        argmin: K no_grad selection forwards + 1 grad forward on the winner.
+        soft:   K grad forwards, softmax(-score/T) weighted composite loss."""
+        K = xm_cfg.K
+        selection = xm_cfg.get('selection', 'argmin')
+        selection_loss = xm_cfg.get('selection_loss', 'trans_rot')
+        candidates = self.interpolant.corrupt_batch_xm(batch, K)
+        self._xm_self_condition(candidates)
+
+        if selection == 'soft':
+            # Softmax-weighted MCL: needs grad through all K candidates.
+            all_losses = [self.model_step(nb) for nb in candidates]
+            scores = torch.stack(
+                [self._xm_selection_subset(l, selection_loss) for l in all_losses],
+                dim=0)  # [K, B]
+            temp = xm_cfg.get('soft_temperature', 1.0)
+            weights = torch.softmax(-scores.detach() / temp, dim=0)  # [K, B] stop-grad
+            batch_losses = {}
+            for key in all_losses[0]:
+                stacked = torch.stack([l[key] for l in all_losses], dim=0)  # [K, B]
+                batch_losses[key] = torch.sum(weights * stacked, dim=0)  # [B]
+            winner = torch.argmin(scores, dim=0)
+            noisy_batch = candidates[0]
+        else:
+            # Winner-take-all (argmin): score under no_grad, backprop only winner.
+            with torch.no_grad():
+                scores = torch.stack(
+                    [self._xm_selection_subset(self.model_step(nb), selection_loss)
+                     for nb in candidates],
+                    dim=0)  # [K, B]
+            winner = torch.argmin(scores, dim=0)  # [B]
+            # Assemble a single batch from each example's winning candidate. t,
+            # x_1 and masks are shared, so only the prior-dependent tensors differ.
+            noisy_batch = dict(candidates[0])
+            trans_stack = torch.stack([nb['trans_t'] for nb in candidates], dim=0)
+            rot_stack = torch.stack([nb['rotmats_t'] for nb in candidates], dim=0)
+            noisy_batch['trans_t'] = self._xm_gather(trans_stack, winner)
+            noisy_batch['rotmats_t'] = self._xm_gather(rot_stack, winner)
+            if 'trans_sc' in candidates[0]:
+                sc_stack = torch.stack([nb['trans_sc'] for nb in candidates], dim=0)
+                noisy_batch['trans_sc'] = self._xm_gather(sc_stack, winner)
+            batch_losses = self.model_step(noisy_batch)
+            if xm_cfg.get('numeric_check', False):
+                winner_sel = torch.gather(
+                    scores, 0, winner.unsqueeze(0)).squeeze(0)  # [B]
+                rerun_sel = self._xm_selection_subset(batch_losses, selection_loss)
+                assert torch.allclose(winner_sel, rerun_sel, atol=1e-5), (
+                    'XM winner re-run score does not match the no_grad selection '
+                    'score (stochastic layer or RNG mismatch).')
+
+        diag = self._xm_diagnostics(scores, winner, candidates[0]['r3_t'])
+        return noisy_batch, batch_losses, diag
+
     def training_step(self, batch: Any, stage: int):
         step_start_time = time.time()
         self.interpolant.set_device(batch['res_mask'].device)
-        noisy_batch = self.interpolant.corrupt_batch(batch)
-        if self._interpolant_cfg.self_condition and random.random() > 0.5:
-            with torch.no_grad():
-                model_sc = self.model(noisy_batch)
-                noisy_batch['trans_sc'] = (
-                    model_sc['pred_trans'] * noisy_batch['diffuse_mask'][..., None]
-                    + noisy_batch['trans_1'] * (1 - noisy_batch['diffuse_mask'][..., None])
-                )
-        batch_losses = self.model_step(noisy_batch)
+        xm_cfg = self._interpolant_cfg.get('xm', None)
+        xm_active = (
+            xm_cfg is not None and xm_cfg.enabled
+            and self.global_step >= xm_cfg.warmup_steps
+        )
+        if xm_active:
+            noisy_batch, batch_losses, xm_diag = self._xm_step(batch, xm_cfg)
+        else:
+            noisy_batch = self.interpolant.corrupt_batch(batch)
+            if self._interpolant_cfg.self_condition and random.random() > 0.5:
+                with torch.no_grad():
+                    model_sc = self.model(noisy_batch)
+                    noisy_batch['trans_sc'] = (
+                        model_sc['pred_trans'] * noisy_batch['diffuse_mask'][..., None]
+                        + noisy_batch['trans_1'] * (1 - noisy_batch['diffuse_mask'][..., None])
+                    )
+            batch_losses = self.model_step(noisy_batch)
+            xm_diag = None
         num_batch = batch_losses['trans_loss'].shape[0]
         total_losses = {
             k: torch.mean(v) for k,v in batch_losses.items()
@@ -322,6 +439,19 @@ class FlowModule(LightningModule):
             for k,v in stratified_losses.items():
                 self._log_scalar(
                     f"train/{k}", v, prog_bar=False, batch_size=num_batch)
+
+        # XM selection diagnostics
+        if xm_diag is not None:
+            self._log_scalar(
+                "train/xm_gap_mean", xm_diag['gap_mean'].item(),
+                prog_bar=False, batch_size=num_batch)
+            self._log_scalar(
+                "train/xm_gap_t_corr", xm_diag['gap_t_corr'].item(),
+                prog_bar=False, batch_size=num_batch)
+            for _k in range(xm_diag['K']):
+                self._log_scalar(
+                    f"train/xm_winner_frac_{_k}", xm_diag['winner_hist'][_k].item(),
+                    prog_bar=False, batch_size=num_batch)
 
         # Training throughput
         scaffold_percent = torch.mean(batch['diffuse_mask'].float()).item()
