@@ -16,7 +16,10 @@ independent-coupling baseline:
   inflates the rotation prior.
 - **No arm generalizes past the 128-residue training limit.**
 
-Vanilla independent coupling is the best and simplest.
+Vanilla independent coupling is the best and simplest. **A 50k-step retrain
+(5× longer) confirms this** — see "50k-step follow-up" below: designability rises
+across the board but the ranking is unchanged, and larger K still trades away
+diversity for nothing. The only untested regime is longer proteins.
 
 ## What XM is
 
@@ -111,11 +114,51 @@ the training venv:
 The "exploration/OT buys fewer steps" claim does **not** hold: vanilla peaks highest;
 OT needs *more* steps; K=2 is flatter only because it plateaus lower.
 
+## 50k-step follow-up (2026-08)
+
+We retrained the four viable arms (vanilla, XM K=2/4/8, minibatch-OT) to **50k
+steps** — 5× longer — to test the "needs longer training" limitation below, still
+on PDB ≤128 residues, seed 123, otherwise identical. Full metrics now include
+foldseek diversity (TM-cluster count, cutoff 0.5) and novelty (max pdbTM to the
+full PDB). Eval: 402 backbones/arm, lengths 70–160, best-of-8, scRMSD < 2 Å.
+Consolidated CSV: `xm_eval_results/eval50k/eval50k_full_summary.csv`.
+
+| Arm | Designability | Median scRMSD | Diversity (all) | Clusters (all) | Diversity (des.) | Median novelty |
+|-----|---------------|---------------|-----------------|----------------|------------------|----------------|
+| **Vanilla** | **69.4 %** | 1.44 | 0.415 | 167 | 0.323 | 0.197 |
+| XM K=4 | 67.4 % | 1.36 | 0.401 | 161 | 0.306 | 0.203 |
+| XM K=8 | 66.2 % | 1.44 | 0.368 | 148 | 0.308 | 0.205 |
+| Minibatch-OT | 63.2 % | 1.52 | 0.547 | 220 | 0.402 | 0.227 |
+| XM K=2 | 30.1 % | 4.26 | 0.612 | 246 | 0.455 | 0.215 |
+
+Longer training raises everyone (designability 15 %→69 % for vanilla) but does
+**not** change the ranking or the conclusion:
+
+- **XM still does not help, and larger K monotonically drops diversity.** As K
+  rises, distinct clusters fall (vanilla 167 → K4 161 → K8 148) *and* designability
+  edges down. The paper's mode-committing signature (diversity↓) is visible, but the
+  designability it was supposed to buy never materializes — XM is strictly dominated
+  by vanilla here.
+- **Minibatch-OT is the diversity outlier** — most clusters (220) at a modest
+  designability cost (63.2 %). If diversity were the goal, OT beats every XM arm.
+- **K=2 is broken, not diverse** — its high cluster count is scattered *undesignable*
+  junk (scRMSD 4.26).
+- **Novelty is uninformative at ≤128 residues** — all arms ~0.20 median, and
+  `pct(max pdbTM < 0.5) = 0` for every arm (every designable small backbone matches
+  something in the PDB). It does not separate the arms.
+
+**Open question that remains:** the null result may still be a **small-protein**
+artifact — at ≤128 residues the target is not very multimodal, so there is little
+for exploration to exploit. A longer-protein follow-up (vanilla + K=4 only, cap
+256) is the next test.
+
 ## Verdict
 
-XM is **not useful** at this training scale. Its lower *training* loss is a mechanical
-artifact of best-of-K selection and does not transfer to designability; its extra
-diversity is largely undesignable. OT ties vanilla; SE(3)-OT hurts.
+XM is **not useful** at this training scale, and 50k steps did not rescue it. Its
+lower *training* loss is a mechanical artifact of best-of-K selection and does not
+transfer to designability; its extra diversity is largely undesignable. OT ties
+vanilla on designability while giving the most diversity; SE(3)-OT hurts. The one
+regime left untested is longer proteins.
 
 ## Limitations & how to firm it up
 
