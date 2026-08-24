@@ -31,7 +31,16 @@ class Experiment:
             train_dataset=self._train_dataset,
             valid_dataset=self._valid_dataset
         )
-        self._train_device_ids = eu.get_available_device(self._exp_cfg.num_devices)
+        # Honor CUDA_VISIBLE_DEVICES when it is set (deliberate GPU pinning, e.g.
+        # thermal_guard) instead of GPUtil, which ignores the mask and would pick
+        # a different physical card than the one being thermally monitored. When
+        # the mask is unset, fall back to the original GPUtil-based selection.
+        _visible = os.environ.get('CUDA_VISIBLE_DEVICES')
+        if _visible:
+            n = min(self._exp_cfg.num_devices, len(_visible.split(',')))
+            self._train_device_ids = list(range(n))
+        else:
+            self._train_device_ids = eu.get_available_device(self._exp_cfg.num_devices)
         log.info(f"Training with devices: {self._train_device_ids}")
         self._module: LightningModule = FlowModule(self._cfg)
 
@@ -74,7 +83,16 @@ class Experiment:
                 cfg_dict = OmegaConf.to_container(self._cfg, resolve=True)
                 flat_cfg = dict(eu.flatten_dict(cfg_dict))
                 if isinstance(logger.experiment.config, wandb.sdk.wandb_config.Config):
-                    logger.experiment.config.update(flat_cfg)
+                    # allow_val_change so a resumed wandb run can update config
+                    # keys that legitimately differ on resume (warm_start path,
+                    # checkpointer dirpath, max_steps). No-op for fresh runs.
+                    logger.experiment.config.update(flat_cfg, allow_val_change=True)
+                # Plot every metric against the true trainer/global_step so that
+                # warm-started/resumed runs show the actual step (Lightning's
+                # WandbLogger otherwise lets wandb's internal _step reset to 0 and
+                # records the real step only as the trainer/global_step metric).
+                logger.experiment.define_metric('trainer/global_step')
+                logger.experiment.define_metric('*', step_metric='trainer/global_step')
         trainer = Trainer(
             **self._exp_cfg.trainer,
             callbacks=callbacks,

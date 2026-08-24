@@ -72,6 +72,11 @@ inference:
     # Subset of lengths to sample. If null, sample all targets.
     length_subset: null
 
+    # Write the reverse-diffusion trajectory PDBs (bb_traj.pdb, x0_traj.pdb) per
+    # sample. These are large (~12MB/sample) and only sample.pdb is needed for
+    # designability eval, so set false to save disk on big sampling runs.
+    write_trajectories: True
+
     overwrite: False
 
     # CSV path for scaffolding targets.

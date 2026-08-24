@@ -302,15 +302,16 @@ class FlowModule(LightningModule):
     def _xm_self_condition(self, candidates):
         """Draw the self-conditioning coin ONCE (shared across candidates, so the
         RNG draw matches the vanilla path) and, if on, compute each candidate's
-        own trans_sc via a no_grad forward."""
+        own trans_sc. The K forwards run as a SINGLE batched no_grad forward
+        (falls back to per-candidate on CUDA OOM)."""
         if self._interpolant_cfg.self_condition and random.random() > 0.5:
-            for noisy_batch in candidates:
-                with torch.no_grad():
-                    model_sc = self.model(noisy_batch)
-                    noisy_batch['trans_sc'] = (
-                        model_sc['pred_trans'] * noisy_batch['diffuse_mask'][..., None]
-                        + noisy_batch['trans_1'] * (1 - noisy_batch['diffuse_mask'][..., None])
-                    )
+            with torch.no_grad():
+                preds = self._xm_forward_batched(
+                    candidates, lambda nb: self.model(nb)['pred_trans'])
+            for noisy_batch, pred_trans in zip(candidates, preds):
+                dm = noisy_batch['diffuse_mask'][..., None]
+                noisy_batch['trans_sc'] = (
+                    pred_trans * dm + noisy_batch['trans_1'] * (1 - dm))
 
     @staticmethod
     def _xm_diagnostics(scores, winner, t):
@@ -332,6 +333,65 @@ class FlowModule(LightningModule):
             'winner_hist': hist,
             'K': K,
         }
+
+    @staticmethod
+    def _xm_stack(candidates):
+        """Concatenate K candidate batches along dim 0 -> one [K*B, ...] batch.
+        Non-tensor values are taken from the first candidate (they are shared)."""
+        ref = candidates[0]
+        out = {}
+        for key, val in ref.items():
+            if torch.is_tensor(val):
+                out[key] = torch.cat([c[key] for c in candidates], dim=0)
+            else:
+                out[key] = val
+        return out
+
+    @staticmethod
+    def _xm_unstack(out, K, num_batch):
+        """Split a [K*B, ...] batched result back into a list of K per-candidate
+        results (tensor -> list of tensors; dict -> list of dicts)."""
+        def split(t):
+            return [t[k * num_batch:(k + 1) * num_batch] for k in range(K)]
+        if torch.is_tensor(out):
+            return split(out)
+        per_key = {key: split(val) for key, val in out.items()}
+        return [{key: per_key[key][k] for key in out} for k in range(K)]
+
+    def _xm_forward_batched(self, candidates, fn):
+        """Run `fn` over the K candidates by concatenating them into wide
+        [chunk*B, ...] forwards instead of K serial ones. This is the XM
+        speedup: it replaces K latency-bound, GPU-underutilized forwards with a
+        few wide (saturating) forwards, then splits the result back to a list of
+        K per-candidate outputs.
+
+        `chunk` starts at K (one forward for all candidates) and HALVES on CUDA
+        OOM down to 1 (the original per-candidate path), so a tight-memory GPU
+        still gets whatever batching fits. The working chunk is memoized on the
+        module so subsequent steps skip the OOM probing. Result is identical to
+        the serial loop modulo fp reduction ordering. Callers own no_grad."""
+        K = len(candidates)
+        num_batch = candidates[0]['diffuse_mask'].shape[0]
+        chunk = min(getattr(self, '_xm_chunk', K) or K, K)
+        while True:
+            try:
+                results = []
+                for i in range(0, K, chunk):
+                    group = candidates[i:i + chunk]
+                    results.extend(
+                        self._xm_unstack(fn(self._xm_stack(group)),
+                                         len(group), num_batch))
+                self._xm_chunk = chunk
+                return results
+            except torch.cuda.OutOfMemoryError:
+                torch.cuda.empty_cache()
+                if chunk == 1:
+                    self._xm_chunk = 1
+                    raise
+                chunk = max(1, chunk // 2)
+                self._print_logger.warning(
+                    f'XM batched forward OOM; retrying at chunk={chunk} '
+                    f'(K*B would have been {K * num_batch}).')
 
     def _xm_step(self, batch, xm_cfg):
         """Explorative Modeling training step. Builds K candidates sharing t and
@@ -361,10 +421,13 @@ class FlowModule(LightningModule):
             noisy_batch = candidates[0]
         else:
             # Winner-take-all (argmin): score under no_grad, backprop only winner.
+            # The K selection forwards run as one batched [K*B] forward.
             with torch.no_grad():
+                per_cand_losses = self._xm_forward_batched(
+                    candidates, self.model_step)
                 scores = torch.stack(
-                    [self._xm_selection_subset(self.model_step(nb), selection_loss)
-                     for nb in candidates],
+                    [self._xm_selection_subset(l, selection_loss)
+                     for l in per_cand_losses],
                     dim=0)  # [K, B]
             winner = torch.argmin(scores, dim=0)  # [B]
             # Assemble a single batch from each example's winning candidate. t,
@@ -382,9 +445,15 @@ class FlowModule(LightningModule):
                 winner_sel = torch.gather(
                     scores, 0, winner.unsqueeze(0)).squeeze(0)  # [B]
                 rerun_sel = self._xm_selection_subset(batch_losses, selection_loss)
-                assert torch.allclose(winner_sel, rerun_sel, atol=1e-5), (
+                # Tol is 5e-3: TF32 matmuls (set_float32_matmul_precision('high'))
+                # give ~1e-3 data-dependent error, and the winner batch is a
+                # different batch composition than the per-candidate scoring, so
+                # TF32 accumulates differently. A real indexing/gather bug would
+                # pick the wrong candidate -> O(0.1) mismatch, still caught here.
+                assert torch.allclose(winner_sel, rerun_sel, atol=5e-3), (
                     'XM winner re-run score does not match the no_grad selection '
-                    'score (stochastic layer or RNG mismatch).')
+                    f'score (max |Δ|={( winner_sel - rerun_sel).abs().max():.2e}); '
+                    'indexing/gather bug, not TF32 noise.')
 
         diag = self._xm_diagnostics(scores, winner, candidates[0]['r3_t'])
         return noisy_batch, batch_losses, diag
@@ -526,6 +595,9 @@ class FlowModule(LightningModule):
                 aatype = du.to_numpy(batch['aatype'].long())[0]
             else:
                 aatype = np.zeros(sample_length, dtype=int)
+            _samples_cfg = getattr(self, '_samples_cfg', None)
+            write_traj = True if _samples_cfg is None else _samples_cfg.get(
+                'write_trajectories', True)
             _ = eu.save_traj(
                 bb_traj[-1],
                 bb_traj,
@@ -533,4 +605,5 @@ class FlowModule(LightningModule):
                 du.to_numpy(diffuse_mask)[0],
                 output_dir=sample_dir,
                 aatype=aatype,
+                write_trajectories=write_traj,
             )

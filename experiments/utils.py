@@ -200,6 +200,7 @@ def save_traj(
         diffuse_mask: np.ndarray,
         output_dir: str,
         aatype = None,
+        write_trajectories: bool = True,
     ):
     """Writes final sample and reverse diffusion trajectory.
 
@@ -239,20 +240,25 @@ def save_traj(
         no_indexing=True,
         aatype=aatype,
     )
-    prot_traj_path = au.write_prot_to_pdb(
-        bb_prot_traj,
-        prot_traj_path,
-        b_factors=b_factors,
-        no_indexing=True,
-        aatype=aatype,
-    )
-    x0_traj_path = au.write_prot_to_pdb(
-        x0_traj,
-        x0_traj_path,
-        b_factors=b_factors,
-        no_indexing=True,
-        aatype=aatype
-    )
+    # The reverse-diffusion trajectories (bb_traj/x0_traj) are large intermediate
+    # artifacts, not needed for designability eval. Skip them when disabled.
+    if write_trajectories:
+        prot_traj_path = au.write_prot_to_pdb(
+            bb_prot_traj,
+            prot_traj_path,
+            b_factors=b_factors,
+            no_indexing=True,
+            aatype=aatype,
+        )
+        x0_traj_path = au.write_prot_to_pdb(
+            x0_traj,
+            x0_traj_path,
+            b_factors=b_factors,
+            no_indexing=True,
+            aatype=aatype
+        )
+    else:
+        prot_traj_path = x0_traj_path = None
     return {
         'sample_path': sample_path,
         'traj_path': prot_traj_path,
