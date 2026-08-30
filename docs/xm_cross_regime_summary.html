@@ -1,0 +1,310 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="auto">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Explorative Modeling (XM) for FrameFlow — cross-regime results</title>
+<style>
+  :root{
+    color-scheme: light;
+    --plane:#f9f9f7; --surface:#fcfcfb;
+    --ink:#0b0b0b; --ink2:#52514e; --muted:#898781;
+    --grid:#e1e0d9; --axis:#c3c2b7; --border:rgba(11,11,11,.10);
+    /* categorical slots = regimes */
+    --s1:#2a78d6; /* 10k ≤128  */
+    --s2:#eb6834; /* 50k ≤128  */
+    --s3:#1baf7a; /* 50k ≤256  */
+    --good:#006300;
+  }
+  :root[data-theme="dark"]{
+    color-scheme: dark;
+    --plane:#0d0d0d; --surface:#1a1a19;
+    --ink:#fff; --ink2:#c3c2b7; --muted:#898781;
+    --grid:#2c2c2a; --axis:#383835; --border:rgba(255,255,255,.10);
+    --s1:#3987e5; --s2:#d95926; --s3:#199e70; --good:#0ca30c;
+  }
+  @media (prefers-color-scheme: dark){
+    :root[data-theme="auto"]{
+      color-scheme: dark;
+      --plane:#0d0d0d; --surface:#1a1a19;
+      --ink:#fff; --ink2:#c3c2b7; --muted:#898781;
+      --grid:#2c2c2a; --axis:#383835; --border:rgba(255,255,255,.10);
+      --s1:#3987e5; --s2:#d95926; --s3:#199e70; --good:#0ca30c;
+    }
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--plane);color:var(--ink);
+    font-family:system-ui,-apple-system,"Segoe UI",sans-serif;line-height:1.5;
+    -webkit-font-smoothing:antialiased;padding:32px 20px 80px}
+  .wrap{max-width:960px;margin:0 auto}
+  h1{font-size:26px;margin:0 0 4px;letter-spacing:-.02em}
+  .sub{color:var(--ink2);font-size:15px;margin:0 0 24px}
+  h2{font-size:18px;margin:36px 0 4px;letter-spacing:-.01em}
+  .note{color:var(--muted);font-size:13px;margin:0 0 16px}
+  .card{background:var(--surface);border:1px solid var(--border);border-radius:12px;
+    padding:20px 22px;margin-top:14px}
+  .verdict{background:var(--surface);border:1px solid var(--border);border-left:3px solid var(--good);
+    border-radius:12px;padding:16px 20px;margin:18px 0 6px;font-size:15px}
+  .verdict b{color:var(--good)}
+  /* stat tiles */
+  .tiles{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin-top:16px}
+  .tile{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:16px 18px}
+  .tile .k{font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.04em}
+  .tile .v{font-size:34px;font-weight:650;letter-spacing:-.02em;margin:2px 0}
+  .tile .d{font-size:13px;color:var(--ink2)}
+  /* legend */
+  .legend{display:flex;gap:18px;flex-wrap:wrap;margin:2px 0 8px;font-size:13px;color:var(--ink2)}
+  .legend span{display:inline-flex;align-items:center;gap:7px}
+  .sw{width:11px;height:11px;border-radius:3px;display:inline-block}
+  /* table */
+  table{border-collapse:collapse;width:100%;font-size:13.5px;margin-top:6px}
+  th,td{padding:7px 10px;text-align:right;border-bottom:1px solid var(--grid);
+    font-variant-numeric:tabular-nums}
+  th:first-child,td:first-child{text-align:left;font-variant-numeric:normal}
+  thead th{color:var(--muted);font-weight:600;font-size:12px;text-transform:uppercase;letter-spacing:.03em}
+  tbody tr:hover{background:color-mix(in srgb,var(--s1) 7%,transparent)}
+  .win{color:var(--good);font-weight:650}
+  .dim{color:var(--muted)}
+  /* controls */
+  .bar-top{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap}
+  .toggle{display:inline-flex;border:1px solid var(--border);border-radius:8px;overflow:hidden}
+  .toggle button{background:transparent;border:0;color:var(--ink2);padding:6px 12px;font-size:13px;
+    cursor:pointer;font-family:inherit}
+  .toggle button[aria-pressed="true"]{background:var(--s1);color:#fff}
+  svg{display:block;width:100%;height:auto;overflow:visible}
+  .tick{fill:var(--muted);font-size:11px}
+  .axlabel{fill:var(--ink2);font-size:12px}
+  .dlabel{fill:var(--ink);font-size:11px;font-weight:600}
+  .glabel{fill:var(--ink2);font-size:12.5px}
+  /* tooltip */
+  #tt{position:fixed;pointer-events:none;opacity:0;transition:opacity .08s;z-index:9;
+    background:var(--surface);border:1px solid var(--border);border-radius:8px;
+    padding:8px 10px;font-size:12.5px;box-shadow:0 6px 24px rgba(0,0,0,.18);max-width:240px}
+  #tt .tt-h{font-weight:650;margin-bottom:3px}
+  #tt .tt-r{color:var(--ink2);display:flex;justify-content:space-between;gap:14px}
+  .foot{color:var(--muted);font-size:12.5px;margin-top:10px}
+  a{color:var(--s1)}
+  rect.mark,circle.mark{cursor:pointer}
+</style>
+</head>
+<body>
+<div id="tt" role="status" aria-live="polite"></div>
+<div class="wrap">
+  <div class="bar-top">
+    <div>
+      <h1>Explorative Modeling (XM) for FrameFlow</h1>
+      <p class="sub">Best-of-K coupling selection vs. plain independent coupling — designability across four training regimes.</p>
+    </div>
+    <div class="toggle" role="group" aria-label="Theme">
+      <button data-t="light">Light</button>
+      <button data-t="dark">Dark</button>
+      <button data-t="auto" aria-pressed="true">Auto</button>
+    </div>
+  </div>
+
+  <div class="verdict">
+    <b>Verdict:</b> across every regime tested — 10k &amp; 50k steps, ≤128 &amp; ≤256 residues —
+    plain <b style="color:var(--ink)">vanilla</b> independent coupling wins. XM never beats it; larger K
+    trades structural diversity for no designability gain, and at ≤256 XM is clearly <i>worse</i>.
+    The null result is not a small-protein artifact. <b style="color:var(--ink)">Experiment complete.</b>
+  </div>
+
+  <div class="tiles">
+    <div class="tile"><div class="k">50k · ≤128 res</div><div class="v" style="color:var(--good)">69.4%</div><div class="d">vanilla designable · best XM (K4) 67.4%</div></div>
+    <div class="tile"><div class="k">50k · ≤256 res</div><div class="v" style="color:var(--good)">29.9%</div><div class="d">vanilla designable · K4 22.9% (−7 pts)</div></div>
+    <div class="tile"><div class="k">XM designability edge</div><div class="v">none</div><div class="d">0 of 4 regimes favor best-of-K</div></div>
+  </div>
+
+  <h2>Designability by arm and regime</h2>
+  <p class="note">Fraction of 402 backbones/arm with self-consistency scRMSD &lt; 2 Å (best of 8 ProteinMPNN→ESMFold sequences). Taller is better. Missing bars = arm not run in that regime.</p>
+  <div class="card">
+    <div class="legend" id="leg1"></div>
+    <svg id="bars" viewBox="0 0 900 380" role="img" aria-label="Grouped bar chart of designability by arm and regime"></svg>
+  </div>
+
+  <h2>The XM trade-off, at 50k steps · ≤128 residues</h2>
+  <p class="note">Designability vs. structural diversity among designable backbones (foldseek TM-cluster fraction, cutoff 0.5). XM's promise is designability↑ at diversity↓; here designability stays flat-to-down while diversity <i>also</i> falls as K grows — no favorable trade. K2 is broken (undesignable, scattered).</p>
+  <div class="card">
+    <svg id="scatter" viewBox="0 0 900 400" role="img" aria-label="Scatter of designability versus diversity for the 50k models"></svg>
+  </div>
+
+  <h2>All numbers</h2>
+  <div class="card" style="overflow-x:auto">
+    <table>
+      <thead><tr>
+        <th>Arm</th>
+        <th>10k ≤128</th><th>50k ≤128</th><th>50k ≤256</th>
+        <th>Diversity (des.) 50k≤128</th><th>Diversity (des.) 50k≤256</th><th>Median novelty 50k≤128</th>
+      </tr></thead>
+      <tbody id="tbody"></tbody>
+    </table>
+    <p class="foot">Designability = % designable (scRMSD &lt; 2 Å), n=402/arm. Diversity (des.) = distinct foldseek clusters ÷ designable count (higher = more varied). Novelty = 1 − max TM-score to the full PDB. “—” = arm not run in that regime. SE(3)-consistent OT (10k only) = 6.0% and is omitted above. Vanilla is the per-regime best (green).</p>
+  </div>
+
+  <p class="foot">Source: <code>docs/xm_explorative_modeling.md</code>, <code>xm_eval_results/eval50k/eval50k_full_summary.csv</code>, <code>xm_eval_results/eval256/eval256_summary.csv</code>.</p>
+</div>
+
+<script>
+// ---------- data ----------
+const REGIMES = [
+  {key:'r10_128', label:'10k · ≤128', v:'--s1'},
+  {key:'r50_128', label:'50k · ≤128', v:'--s2'},
+  {key:'r50_256', label:'50k · ≤256', v:'--s3'},
+];
+const ARMS = ['vanilla','XM K=2','XM K=4','XM K=8','OT'];
+// designability %
+const DES = {
+  'vanilla': {r10_128:15.2, r50_128:69.4, r50_256:29.9},
+  'XM K=2':  {r10_128:10.4, r50_128:30.1, r50_256:null},
+  'XM K=4':  {r10_128:13.7, r50_128:67.4, r50_256:22.9},
+  'XM K=8':  {r10_128: 3.5, r50_128:66.2, r50_256:null},
+  'OT':      {r10_128:14.9, r50_128:63.2, r50_256:null},
+};
+// diversity among designable + novelty
+const DIV = {
+  'vanilla': {d128:0.323, d256:0.733, nov128:0.197},
+  'XM K=2':  {d128:0.455, d256:null,  nov128:0.215},
+  'XM K=4':  {d128:0.306, d256:0.674, nov128:0.203},
+  'XM K=8':  {d128:0.308, d256:null,  nov128:0.205},
+  'OT':      {d128:0.402, d256:null,  nov128:0.227},
+};
+const cvar = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+const tt = document.getElementById('tt');
+function showTip(html, e){ tt.innerHTML=html; tt.style.opacity=1;
+  const p=12; let x=e.clientX+p, y=e.clientY+p;
+  const r=tt.getBoundingClientRect();
+  if(x+r.width>innerWidth) x=e.clientX-r.width-p;
+  if(y+r.height>innerHeight) y=e.clientY-r.height-p;
+  tt.style.left=x+'px'; tt.style.top=y+'px'; }
+function hideTip(){ tt.style.opacity=0; }
+const SVGNS='http://www.w3.org/2000/svg';
+function el(n,a){const e=document.createElementNS(SVGNS,n);for(const k in a)e.setAttribute(k,a[k]);return e;}
+
+// ---------- legend ----------
+const leg1=document.getElementById('leg1');
+REGIMES.forEach(r=>{const s=document.createElement('span');
+  s.innerHTML=`<i class="sw" style="background:var(${r.v})"></i>${r.label}`;leg1.appendChild(s);});
+
+// ---------- grouped bars ----------
+function drawBars(){
+  const svg=document.getElementById('bars'); svg.innerHTML='';
+  const W=900,H=380, m={t:24,r:12,b:52,l:44};
+  const pw=W-m.l-m.r, ph=H-m.t-m.b;
+  const yMax=70, y=v=>m.t+ph-(v/yMax)*ph;
+  // gridlines + y ticks
+  for(let g=0; g<=70; g+=10){
+    svg.appendChild(el('line',{x1:m.l,x2:W-m.r,y1:y(g),y2:y(g),stroke:cvar('--grid'),'stroke-width':1}));
+    svg.appendChild(Object.assign(el('text',{x:m.l-8,y:y(g)+4,'text-anchor':'end',class:'tick'}),{textContent:g}));
+  }
+  svg.appendChild(Object.assign(el('text',{x:m.l-8,y:m.t-10,'text-anchor':'end',class:'axlabel'}),{textContent:'%'}));
+  const gW=pw/ARMS.length, inner=gW*0.72, bw=inner/REGIMES.length;
+  ARMS.forEach((arm,i)=>{
+    const gx=m.l+i*gW+(gW-inner)/2;
+    // group label
+    svg.appendChild(Object.assign(el('text',{x:m.l+i*gW+gW/2,y:H-m.b+20,'text-anchor':'middle',class:'glabel'}),{textContent:arm}));
+    REGIMES.forEach((r,j)=>{
+      const val=DES[arm][r.key];
+      const x=gx+j*bw;
+      if(val==null){
+        // subtle "not run" tick at baseline
+        svg.appendChild(el('line',{x1:x+2,x2:x+bw-2,y1:y(0),y2:y(0),stroke:cvar('--axis'),'stroke-width':2,'stroke-dasharray':'2 3'}));
+        return;
+      }
+      const bh=y(0)-y(val);
+      const rect=el('rect',{class:'mark',x:x+1,y:y(val),width:bw-2,height:Math.max(bh,1),rx:4,fill:cvar(r.v)});
+      const label=`<div class="tt-h">${arm}</div><div class="tt-r"><span>${r.label}</span><b>${val}%</b></div>`;
+      rect.addEventListener('mousemove',e=>showTip(label,e));
+      rect.addEventListener('mouseleave',hideTip);
+      svg.appendChild(rect);
+      // direct label (relief rule for aqua on light)
+      svg.appendChild(Object.assign(el('text',{x:x+bw/2,y:y(val)-4,'text-anchor':'middle',class:'dlabel'}),{textContent:val}));
+    });
+  });
+  // baseline
+  svg.appendChild(el('line',{x1:m.l,x2:W-m.r,y1:y(0),y2:y(0),stroke:cvar('--axis'),'stroke-width':1.5}));
+}
+
+// ---------- scatter: designability vs diversity (50k ≤128) ----------
+function drawScatter(){
+  const svg=document.getElementById('scatter'); svg.innerHTML='';
+  const W=900,H=400, m={t:20,r:24,b:52,l:56};
+  const pw=W-m.l-m.r, ph=H-m.t-m.b;
+  const xMin=25,xMax=75, yMin=0.25,yMax=0.50;
+  const x=v=>m.l+((v-xMin)/(xMax-xMin))*pw;
+  const y=v=>m.t+ph-((v-yMin)/(yMax-yMin))*ph;
+  // grid x
+  for(let g=30; g<=70; g+=10){
+    svg.appendChild(el('line',{x1:x(g),x2:x(g),y1:m.t,y2:m.t+ph,stroke:cvar('--grid'),'stroke-width':1}));
+    svg.appendChild(Object.assign(el('text',{x:x(g),y:H-m.b+20,'text-anchor':'middle',class:'tick'}),{textContent:g+'%'}));
+  }
+  // grid y
+  for(let g=0.30; g<=0.50; g+=0.05){
+    svg.appendChild(el('line',{x1:m.l,x2:m.l+pw,y1:y(g),y2:y(g),stroke:cvar('--grid'),'stroke-width':1}));
+    svg.appendChild(Object.assign(el('text',{x:m.l-8,y:y(g)+4,'text-anchor':'end',class:'tick'}),{textContent:g.toFixed(2)}));
+  }
+  // axis labels
+  svg.appendChild(Object.assign(el('text',{x:m.l+pw/2,y:H-8,'text-anchor':'middle',class:'axlabel'}),{textContent:'Designability  (% scRMSD < 2 Å) →  better'}));
+  const yl=el('text',{x:16,y:m.t+ph/2,'text-anchor':'middle',class:'axlabel',transform:`rotate(-90 16 ${m.t+ph/2})`});
+  yl.textContent='Diversity among designable →  more varied'; svg.appendChild(yl);
+  // points
+  const pts=ARMS.map(a=>({a, x:DES[a].r50_128, y:DIV[a].d128})).filter(p=>p.x!=null&&p.y!=null);
+  const col=a=> a==='vanilla'?cvar('--good'):cvar('--s2');
+  // per-arm label placement: vanilla/K4/K8 cluster tightly, so spread labels
+  // (dx, dy, anchor) to avoid collisions.
+  const LBL={
+    'vanilla':{dx:11, dy:-10, a:'start'},
+    'XM K=4' :{dx:12, dy:2,   a:'start'},
+    'XM K=8' :{dx:0,  dy:24,  a:'middle'},
+    'OT'     :{dx:12, dy:4,   a:'start'},
+    'XM K=2' :{dx:12, dy:4,   a:'start'},
+  };
+  pts.forEach(p=>{
+    const cx=x(p.x), cy=y(p.y), rad=p.a==='vanilla'?8:7;
+    const c=el('circle',{class:'mark',cx,cy,r:rad,fill:col(p.a),stroke:cvar('--surface'),'stroke-width':2});
+    const lab=`<div class="tt-h">${p.a}</div><div class="tt-r"><span>designability</span><b>${p.x}%</b></div><div class="tt-r"><span>diversity (des.)</span><b>${p.y}</b></div>`;
+    c.addEventListener('mousemove',e=>showTip(lab,e));
+    c.addEventListener('mouseleave',hideTip);
+    svg.appendChild(c);
+    const L=LBL[p.a]||{dx:12,dy:4,a:'start'};
+    svg.appendChild(Object.assign(el('text',{x:cx+L.dx,y:cy+L.dy,'text-anchor':L.a,class:'dlabel'}),{textContent:p.a}));
+  });
+  // annotation in the empty lower-middle band, clear of all points
+  svg.appendChild(Object.assign(el('text',{x:x(50),y:y(0.265),'text-anchor':'middle',class:'glabel',style:'fill:var(--muted)'}),{textContent:'vanilla / K4 / K8 cluster tightly — designability flat, diversity ↓ as K grows'}));
+}
+
+// ---------- table ----------
+const fmt=(v,suf='')=> v==null?'<span class="dim">—</span>':v+suf;
+const tb=document.getElementById('tbody');
+ARMS.forEach(a=>{
+  const d=DES[a], v=DIV[a];
+  const tr=document.createElement('tr');
+  const win=k=>{ // vanilla is best per regime
+    const cls = a==='vanilla' ? ' class="win"' : '';
+    return cls;
+  };
+  tr.innerHTML=
+    `<td>${a}</td>`+
+    `<td${a==='vanilla'?' class="win"':''}>${fmt(d.r10_128,'%')}</td>`+
+    `<td${a==='vanilla'?' class="win"':''}>${fmt(d.r50_128,'%')}</td>`+
+    `<td${a==='vanilla'?' class="win"':''}>${fmt(d.r50_256,'%')}</td>`+
+    `<td>${fmt(v.d128)}</td>`+
+    `<td>${fmt(v.d256)}</td>`+
+    `<td>${fmt(v.nov128)}</td>`;
+  tb.appendChild(tr);
+});
+
+// ---------- theme ----------
+const root=document.documentElement;
+document.querySelectorAll('.toggle button').forEach(b=>{
+  b.addEventListener('click',()=>{
+    root.setAttribute('data-theme',b.dataset.t);
+    document.querySelectorAll('.toggle button').forEach(x=>x.setAttribute('aria-pressed', x===b));
+    redraw();
+  });
+});
+function redraw(){ drawBars(); drawScatter(); }
+matchMedia('(prefers-color-scheme: dark)').addEventListener('change',()=>{ if(root.getAttribute('data-theme')==='auto') redraw(); });
+redraw();
+</script>
+</body>
+</html>
