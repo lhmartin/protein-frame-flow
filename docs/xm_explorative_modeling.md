@@ -16,10 +16,11 @@ independent-coupling baseline:
   inflates the rotation prior.
 - **No arm generalizes past the 128-residue training limit.**
 
-Vanilla independent coupling is the best and simplest. **A 50k-step retrain
-(5× longer) confirms this** — see "50k-step follow-up" below: designability rises
-across the board but the ranking is unchanged, and larger K still trades away
-diversity for nothing. The only untested regime is longer proteins.
+Vanilla independent coupling is the best and simplest. Two follow-ups confirm this:
+a **50k-step retrain** (5× longer; ranking unchanged, larger K still trades diversity
+for nothing) and a **longer-protein retrain** (PDB ≤256, vanilla vs K=4). At ≤256
+vanilla beats K=4 by a *wider* margin than at ≤128, so the null result is **not** a
+small-protein artifact. See the two follow-up sections below.
 
 ## What XM is
 
@@ -147,18 +148,38 @@ Longer training raises everyone (designability 15 %→69 % for vanilla) but does
   `pct(max pdbTM < 0.5) = 0` for every arm (every designable small backbone matches
   something in the PDB). It does not separate the arms.
 
-**Open question that remains:** the null result may still be a **small-protein**
-artifact — at ≤128 residues the target is not very multimodal, so there is little
-for exploration to exploit. A longer-protein follow-up (vanilla + K=4 only, cap
-256) is the next test.
+## Longer-protein follow-up — PDB ≤256 (2026-08)
+
+To test whether the null result is a **small-protein** artifact (at ≤128 residues
+the target is barely multimodal, so exploration has little to exploit), we retrained
+the two headline arms — **vanilla and XM K=4** — on PDB monomers **≤256 residues**
+(median PDB monomer is 246, so this is the "typical protein" regime; 29k chains vs
+7.6k at ≤128). Each arm warm-started from its own seed-matched 10k ≤128 base and
+trained to 50k steps at cap 256, then the same eval (402 backbones/arm, lengths
+100–256, best-of-8, scRMSD < 2 Å). CSV: `xm_eval_results/eval256/eval256_summary.csv`.
+
+| Arm | Designability | Median scRMSD | Diversity (all) | Diversity (des.) | Median novelty |
+|-----|---------------|---------------|-----------------|------------------|----------------|
+| **Vanilla** | **29.9 %** | 3.53 | 0.774 | 0.733 | 0.247 |
+| XM K=4 | 22.9 % | 4.97 | 0.766 | 0.674 | 0.236 |
+
+**The null result holds — and XM is worse here, not better.** Vanilla beats K=4 by
+~7 points (29.9 % vs 22.9 %), a *wider* margin than the ~2-point gap at ≤128, so the
+small-protein hypothesis is refuted: XM does not help on longer, more multimodal
+proteins. K=4 again shows the same mode-dropping direction (lower diversity among
+designable, 0.674 vs 0.733) while buying no designability. Longer proteins are just
+harder for both (vanilla 69 %→30 %; overall diversity ~0.42→0.77), which does not
+change the ranking.
 
 ## Verdict
 
-XM is **not useful** at this training scale, and 50k steps did not rescue it. Its
-lower *training* loss is a mechanical artifact of best-of-K selection and does not
-transfer to designability; its extra diversity is largely undesignable. OT ties
-vanilla on designability while giving the most diversity; SE(3)-OT hurts. The one
-regime left untested is longer proteins.
+XM is **not useful**, and neither longer training (50k steps) nor longer proteins
+(≤256) rescue it — at ≤256 it is clearly *worse* than vanilla. Its lower *training*
+loss is a mechanical artifact of best-of-K selection and does not transfer to
+designability; its extra diversity is largely undesignable. OT ties vanilla on
+designability while giving the most diversity; SE(3)-OT hurts. Across every regime
+tested — 10k/50k steps, ≤128/≤256 residues — plain independent coupling wins.
+**Experiment complete.**
 
 ## Limitations & how to firm it up
 
