@@ -7,10 +7,12 @@ because vanilla flow matching already produces zero blur and recovers every
 mode.** The premise XM is built on ("the conditional-mean objective smears
 genuinely multimodal targets") does not reproduce even in this idealized toy.
 XM's only measurable effect is a **small, consistent improvement in mode
-*balance*** (more even coverage of the modes) and a hint that it **stabilizes
-training** (the one diverged run in 24 was a vanilla arm). Neither touches the
-headline generative-quality metric. This corroborates the full-scale protein
-result: **plain independent coupling wins.**
+*balance*** (more even coverage of the modes). An apparent "stabilizes training"
+hint (the one diverged run in 24 was a vanilla arm) was later traced to a
+**SO(3) log-map gradient singularity** in the repo's own code, not to XM — see
+[xm_real_folds.md](xm_real_folds.md). Nothing touches the headline
+generative-quality metric. This corroborates the full-scale protein result:
+**plain independent coupling wins.**
 
 Run: `PYTHONPATH=. .venv/bin/python analysis/xm_toy_mixture.py` (CPU-only, ~35 min).
 Figure: `docs/assets/xm_toy_mixture.png`. Raw: `xm_eval_results/toy/toy_results.csv`.
@@ -136,11 +138,15 @@ The one thing XM *does* do:
   real effect, but small and orthogonal to purity/blur — on real proteins it
   would at best nudge diversity, and the full-scale runs showed diversity did not
   improve either.
-- **Stability hint.** The only training divergence across all 24 runs was a
-  *vanilla* seed (Δ=6, seed 2). Winner-take-all skips the hardest couplings, so
-  it may smooth the loss landscape. This is a single data point — suggestive, not
-  conclusive — and if anything argues for OT-style coupling improvement rather
-  than XM specifically.
+- **Stability hint — later explained away.** The only training divergence across
+  all 24 runs was a *vanilla* seed (Δ=6, seed 2). At the time this looked like XM
+  smoothing the loss landscape. The real-fold screen
+  ([xm_real_folds.md](xm_real_folds.md)) traced the same divergence to its root:
+  a **gradient singularity in `data/so3_utils.py:rotmat_to_rotvec`** at rotation
+  angle θ≈π (`sqrt(0)` leaks a NaN gradient through the multiplicative π-mask
+  even though the forward loss is finite). It is a property of the repo's shared
+  SO(3) log map, not a training instability, and XM only dodges it incidentally
+  (argmin avoids large rotation errors). **This is not an XM advantage.**
 
 ## Verdict
 
